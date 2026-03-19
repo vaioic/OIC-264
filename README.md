@@ -46,8 +46,26 @@ This project is in active development and things might change rapidly.
    .\venv\Scripts\activate
    ```
 
-... Coming soon
+2. Call the ``analyze_images`` script. The script takes two input arguments: a string containing the path to an image or a directory containing images, and the path to the output directory.
 
+   Example:
+   ```bash
+   python -m python -m analyze_images "../data/2026-02-13" "../processed/output"
+   ```
+
+### Output files
+
+The script will generate the following files:
+
+1.	``results.csv`` – This is the data per cell for all the images that were processed.
+
+2.	``summary.csv`` – This contains image-wide data (Number of cells, Total Cell Volume, Total Protein Volume inside Cell, Total Protein Volume outside Cell)
+
+3.	TIFF files showing segmentation results. Each file is a z-stack that can be viewed using Fiji/ImageJ.
+
+   -	Individual cells are outlined in yellow and should have an ID number (corresponding to the “Cell ID” in the results.csv). Note that I ended up performing the analysis in 3D so the same cell should be visible in multiple planes.
+
+   -	Protein clusters are labeled with a cyan outline.
 
 ## Issues
 
@@ -55,10 +73,16 @@ If you encounter any issues with running the code or have any questions, please 
 
 ## Acknowledgements
 
+### Contributors
+<a href="https://github.com/vaioic/OIC-264/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=vaioic/OIC-264" />
+</a>
+
 ### Dependencies
 
 This project relies on the following packages:
 
-TBD
+* xarray v2026.2.0
+* scikit-image v0.26.0
 
 **Note:** For full dependency list, see [requirements.txt](requirements.txt).

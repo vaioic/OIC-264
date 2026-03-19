@@ -6,6 +6,7 @@ import skimage as sk
 import tifffile
 import xarray as xr
 import pandas as pd
+import argparse
 
 def read_image(file):
 
@@ -45,14 +46,8 @@ def segment_cells_3d(img):
     for iZ in range(mask.shape[0]):
         mask = sk.morphology.remove_small_holes(mask, max_size=1000)
 
-    # mask = sk.morphology.opening(mask, sk.morphology.ball(2))
-    #mask = sk.morphology.remove_small_holes(mask, max_size=1000)
-
     labels = sk.measure.label(mask)
 
-    # overlay = sk.segmentation.mark_boundaries(img_norm[9, :, :], labels[9, :, :])
-    # plt.imshow(overlay)
-    # plt.show()
     return labels
 
 def segment_blobs(img):
@@ -81,8 +76,6 @@ def segment_blobs(img):
     # plt.imshow(overlay)
     # plt.show()
     return blobs_mask
-
-
 
 
 def normalize_image(img, max_factor=0.98, min_factor=0.2):
@@ -115,24 +108,28 @@ def normalize_image_prctile(img, upper=100, lower=2):
 
     return img_norm
 
-def analyze_image(file, output_dir):
+def analyze_image(file, output_dir, save_data=True):
 
     if isinstance(file, str):
         file = Path(file)
+    elif isinstance(file, Path):
+        pass
     else:
-        raise ValueError(f"Expected file to be a string.")
+        raise ValueError(f"Expected file to be a str or Path. Instead it is a {type(file)}.")
 
     if isinstance(output_dir, str):
         output_dir = Path(output_dir)
+    elif isinstance(output_dir, Path):
+        pass
     else:
-        raise ValueError(f"Expected output_dir to be a string.")
+        raise ValueError(f"Expected output_dir to be a str or Path. Instead it is a {type(output_dir)}.")
     
     if not output_dir.exists():
         output_dir.mkdir(parents=True)
         
     if not output_dir.is_dir():
         raise ValueError(f"The output path {output_dir} does not seem to point to a valid directory")
-
+    
     nucl_img, protein_img = read_image(file)
 
     cell_labels = segment_cells_3d(nucl_img)
@@ -143,6 +140,7 @@ def analyze_image(file, output_dir):
 
     props = [p for p in props if p.area >= 300]
 
+    red_voxels = np.zeros(len(props))
     volume_ratio = np.zeros(len(props))
     sphericity = np.zeros(len(props))
     for cnt, cell in enumerate(props):
@@ -152,6 +150,7 @@ def analyze_image(file, output_dir):
         num_red_voxels = np.count_nonzero(blob_labels[cell_labels==cell.label])
 
         volume_ratio[cnt] = num_red_voxels/num_voxels
+        red_voxels[cnt] = num_red_voxels
 
         try:
             # Calculate the sphericity
@@ -166,6 +165,7 @@ def analyze_image(file, output_dir):
     # Generate an xarray Dataset
     ds = xr.Dataset(
         data_vars={"volume": ("index", [p.area for p in props]),
+                   "red_volume": ("index", red_voxels),
                    "mean_red_intensity": ("index", [p.intensity_mean for p in props]),
                    "ratio_red_volume": ("index", volume_ratio),
                    "sphericity": ("index", sphericity)
@@ -175,37 +175,103 @@ def analyze_image(file, output_dir):
             "label": ("index", [p.label for p in props])
         }
     )
+
+    # ---Measure image-based statistics---
+
+    # Measure the volume of red OUTSIDE the green cells
+    red_vol_outside_green = blob_labels[cell_labels == 0]
     
-    # TODO: Measure the volume of red objects OUTSIDE the green cells
-    # I think something similar to the way I calculated the ratio previously
+    num_red_voxels_outside_green = np.count_nonzero(red_vol_outside_green)
 
-    # # Filter out objects which are too small
-    # ds_filtered = ds.sel(index=(ds.volume >= 1000))
+    red_vol_inside_green = blob_labels[cell_labels > 0]
+    num_red_voxels_inside_green = np.count_nonzero(red_vol_inside_green)
 
-    # Write data
+    #image, num_cells, red_voxels_in_green, red_voxels_outside_Green, green_voxels
+
+    ds_image = xr.Dataset(
+        data_vars={"num_cells": ("index", [len(props)]),
+                   "num_red_voxels_in_green": ("index", [num_red_voxels_inside_green]),
+                   "num_red_voxels_outside_green": ("index", [num_red_voxels_outside_green]),
+                   "total_green_voxels": ("index", [np.count_nonzero(cell_labels > 0)])
+        },
+        coords={
+            "image": ("index", [file.stem])
+        }
+    )
+
     fn = "results_" + str(file.stem)
-    ds.to_netcdf(output_dir / (fn + ".nc"))
 
-    df = ds.to_dataframe()
-    df.to_csv(output_dir / (fn + ".csv"))
-                                         
-    # in each macrophage, how much red signal?
-   
     export_tiff_stack(nucl_img, cell_labels, protein_img, blob_labels, props, 
-                      (output_dir / (fn + "_labels.tif")))
-
-    # output_slices = []
-    # for iZ in range(cell_labels.shape[0]):
-    #     im = normalize_image(nucl_img)
-    #     overlay = sk.segmentation.mark_boundaries(im[iZ, :, :], cell_labels[iZ, :, :])
-
-    #     output_slices.append(overlay)
-
-    # final_stack_image = np.stack(output_slices, axis=0)
-    # tifffile.imwrite('test_stack.tif', output_slices, photometric='rgb')
+                    (output_dir / (fn + "_labels.tif")))
     
-    # plt.imshow(overlay)
-    # plt.show()
+    if save_data:
+        save_datasets(ds, ds_image, output_dir=output_dir, filename_prefix=fn)
+    else:
+        return ds, ds_image
+
+def save_datasets(ds, ds_image, output_dir, filename_prefix=None):
+
+    # Validate inputs
+    if not isinstance(ds, xr.Dataset):
+        raise ValueError(f"Expected ds to be an xarray Dataset. Instead it is a {type(ds)}.")
+    
+    if not isinstance(ds_image, xr.Dataset):
+        raise ValueError(f"Expected ds_image to be an xarray Dataset. Instead it is a {type(ds_image)}.")
+    
+    if not isinstance(output_dir, Path):
+        raise ValueError(f"Expected output_dir to be a Path. Instead it is a {type(output_dir)}.")
+    
+    if filename_prefix:
+        fn = filename_prefix
+    else:
+        fn = ""
+    
+    # Save the main results file
+    ds.to_netcdf(output_dir / ("results" + fn + ".nc"))
+
+    df = ds.to_dataframe().reset_index()
+    col_order = [
+        "image",
+        "label",
+        "volume",
+        "red_volume",
+        "ratio_red_volume",
+        "mean_red_intensity",
+        "sphericity"]
+    headers = [
+        "Image",
+        "Cell ID",
+        "Cell Volume (voxel)",
+        "Protein Volume (voxel)",
+        "Volume Ratio (Protein/Cell)",
+        "Mean Protein Intensity",
+        "Cell Sphericity"]
+    
+    df[col_order].to_csv(output_dir / ("results" + fn + ".csv"), header=headers, index=False)
+
+    # Save the image summary file
+    ds_image.to_netcdf(output_dir / ("summary" + fn + ".nc"))
+                                        
+    df_image = ds_image.to_dataframe().reset_index()
+    col_order = ["image", 
+                "num_cells", 
+                "total_green_voxels",
+                "num_red_voxels_in_green", 
+                "num_red_voxels_outside_green"
+                ]
+    headers = [
+        "Image",
+        "Number of Cells",
+        "Cell Volume (voxel)",
+        "Protein Volume Inside Cell (voxel)",
+        "Protein Volume Outside Cell (voxel)"
+        ]
+
+    df_image[col_order].to_csv(output_dir / ("summary" + fn + ".csv"), header=headers, index=False)
+
+        
+
+
 
 def export_tiff_stack(nucl_img, nucl_labels, protein_img, protein_labels, props, output_fn):
 
@@ -265,7 +331,80 @@ def export_tiff_stack(nucl_img, nucl_labels, protein_img, protein_labels, props,
     # final_stack_image = (final_stack_image * 255).astype(np.uint8)
     tifffile.imwrite(output_fn, final_stack_image, photometric='rgb')
 
+def analyze_images_in_dir(data_dir, output_dir):
+
+    # Check that the data_dir is a valid directory
+    if isinstance(data_dir, str):
+        data_dir = Path(data_dir)
+    elif isinstance(data_dir, Path):
+        pass
+    else:
+        raise ValueError(f'Expected data_dir argument to be a str or Path. Instead it is a {type(data_dir)}.')
+
+    if not data_dir.exists():
+        raise ValueError(f"The input path '{data_dir}' does not seem to exist.")
+    elif not data_dir.is_dir():
+        raise ValueError(f"The input path '{data_dir}' does not seem to be a valid directory. To process a single image file, use analyze_image instead.")
+    
+    # Validate the output directory
+    if isinstance(output_dir, str):
+        output_dir = Path(output_dir)
+    elif isinstance(output_dir, Path):
+        pass
+    else:
+        raise ValueError(f'Expected output_dir argument to be a str or Path. Instead it is a {type(output_dir)}.')
+
+    if not output_dir.exists():
+        output_dir.mkdir(parents=True)
+    elif not output_dir.is_dir():
+        raise ValueError(f"The output path '{output_dir}' does not seem to be a valid directory.")
+    
+    # Get all image files in directory
+    files = list(data_dir.glob("*.ims"))
+
+    ds_list = []
+    ds_image_list = []
+
+    for f in files:
+        try:
+            ds, ds_image = analyze_image(f, output_dir, save_data=False)
+        except Exception as e:
+            print(f"Error processing file {f}. Error details: {e}.")
+            continue
+
+        ds_list.append(ds)
+        ds_image_list.append(ds_image)
+
+    # Concatenate and save
+    all_ds = xr.concat(ds_list, dim="index", join="outer")
+    all_ds_image = xr.concat(ds_image_list, dim="index", join="outer")
+
+    save_datasets(all_ds, all_ds_image, output_dir)
+
+def main():
+
+    parser = argparse.ArgumentParser(description="Process 3D images of macrophages within zebrafish CHT.")
+
+    parser.add_argument("input", help="Path of image file or directory of files.")
+    parser.add_argument("output", help="Path to the output destination.")
+
+    args = parser.parse_args()
+
+    ip = Path(args.input)
+    
+    if ip.exists():
+
+        if ip.is_dir():
+            analyze_images_in_dir(ip, args.output)
+        elif ip.is_file():
+            analyze_image(ip, args.output)
+        else:
+            raise ValueError('Unknown input type.')
+        
+    else:
+        raise FileNotFoundError(f"The input path '{input}' is not a file or a directory. If the input was a file path, check that you have included the extension.")
 
 if __name__ == "__main__":
-    analyze_image(r"D:\Projects\OIC-264 Magarita\data\2-13-26 GA rapamycin\2026-02-13\1 uM rapa_1.ims", r"../processed/2026-03-18 test")
+    main()
+    #analyze_images_in_dir(r"D:\Projects\OIC-264 Magarita\data\2-13-26 GA rapamycin\2026-02-13", r"../processed/2026-03-18 test")
 
