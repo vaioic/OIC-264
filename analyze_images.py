@@ -9,6 +9,31 @@ import pandas as pd
 import argparse
 
 def read_image(file):
+    """
+    Read image
+
+    This function reads in image data from an IMS-file.
+
+    Parameters
+    ----------
+    file : str or Path
+        Path to the image file
+
+    Returns
+    -------
+    nucl_img : ndarray
+        A 3D array containing the nuclear channel (channel 0). Shape is [Z, Y, X]
+    protein_img : ndarray
+        A 3D array containing the labeled protein channel (channel 1). Shape is [Z, Y, X]
+
+    Raises
+    ------
+    ValueError
+        The input is not a str or Path
+    FileNotFoundError
+        The file was not found
+    """
+
 
     if not (isinstance(file, str) or isinstance(file, Path)):
         raise ValueError(f"file input must be a str or Path.")
@@ -25,14 +50,22 @@ def read_image(file):
 
     return nucl_img, protein_img
 
-def get_mip_image(a, channel):
-
-    mip = np.max(a[0, channel, 7:, :, :], axis=0)
-
-    print(mip.shape)
-    return mip
-
 def segment_cells_3d(img):
+    """
+    Segment macrophages in 3D
+
+    This function identifies macrophages in the image using simple intensity thresholding.
+
+    Parameters
+    ----------
+    img : ndarray
+        Input image with shape [Z, Y, X]
+
+    Returns
+    -------
+    labels : ndarray
+        Labels for each macrophage in the image
+    """
 
     # Pre-process the image to normalize intensity
     img_norm = normalize_image_prctile(img, upper=99.5, lower=10)
@@ -51,6 +84,21 @@ def segment_cells_3d(img):
     return labels
 
 def segment_blobs(img):
+    """
+    Identify blobs corresponding to protein clusters
+
+    This function identifies protein clusters using a simple intensity thresholding operation.
+
+    Parameters
+    ----------
+    img : ndarray
+        Input image with shape [Z, Y, X]
+
+    Returns
+    -------
+    blobs_mask : ndarray
+        Labeled array of the objects in the image
+    """
 
     img_norm = normalize_image_prctile(img, lower=5, upper=99.5)
 
@@ -77,23 +125,26 @@ def segment_blobs(img):
     # plt.show()
     return blobs_mask
 
-
-def normalize_image(img, max_factor=0.98, min_factor=0.2):
-
-    if not img.dtype == np.float32:
-        img = img.astype(np.float32)
-
-    Imax = np.max(img)
-    Imin = np.min(img)
-
-    img_norm = (img - Imin)/(Imax - Imin)
-
-    img_norm[img_norm > max_factor] = 1.0
-    img_norm[img_norm < min_factor] = 0.0
-
-    return img_norm
-
 def normalize_image_prctile(img, upper=100, lower=2):
+    """
+    Normalize image by percentile
+
+    This function normalizes the pixel value in the image to have a range between 0.0 and 1.0 where the upper and lower bound are calculated using the percentile of the image intensity.
+
+    Parameters
+    ----------
+    img : ndarray
+        Input image data
+    upper : float, optional
+        Percentile for upper bound, by default 100
+    lower : float, optional
+        Percentile for lower bound, by default 2
+
+    Returns
+    -------
+    img_norm : ndarray
+        The normalized image data
+    """
 
     if not img.dtype == np.float32:
         img = img.astype(np.float32)
@@ -109,6 +160,36 @@ def normalize_image_prctile(img, upper=100, lower=2):
     return img_norm
 
 def analyze_image(file, output_dir, save_data=True):
+    """
+    Analyze macrophage and protein clusters in an image
+
+    This function processes a single image file, identifying labeled macrophages and protein clusters. The macrophage is expected to be in channel 0 and the protein clusters are expected to be in channel 1.
+
+    Parameters
+    ----------
+    file : str or Path
+        Path to the input image file
+    output_dir : str or Path
+        Path to the output directory
+    save_data : bool, optional
+        Whether the resulting image data will be saved. Primarily used so we don't save large numbers of individual files when processing all images in a directory. By default True
+
+    Returns
+    -------
+    ds : xarray.Dataset
+        The Dataset contains measured properties for each macrophage in the image.
+    ds_image : xarray.Dataset
+        This Dataset contains the measured properties for the image (e.g., the volume of the protein clusters within and outside of cells).
+
+    Raises
+    ------
+    ValueError
+        The input file is not a str or Path
+    ValueError
+        The output directory is not a str or Path
+    ValueError
+        The output directory path is invalid
+    """
 
     if isinstance(file, str):
         file = Path(file)
@@ -210,6 +291,31 @@ def analyze_image(file, output_dir, save_data=True):
         return ds, ds_image
 
 def save_datasets(ds, ds_image, output_dir, filename_prefix=None):
+    """
+    Save datasets
+
+    This is primarily a convenience function to save the output data in both netCDF and CSV formats. For the CSV-file, the function reorders and renames the columns to be more user-friendly.
+
+    Parameters
+    ----------
+    ds : _type_
+        _description_
+    ds_image : _type_
+        _description_
+    output_dir : _type_
+        _description_
+    filename_prefix : _type_, optional
+        _description_, by default None
+
+    Raises
+    ------
+    ValueError
+        _description_
+    ValueError
+        _description_
+    ValueError
+        _description_
+    """
 
     # Validate inputs
     if not isinstance(ds, xr.Dataset):
@@ -267,13 +373,33 @@ def save_datasets(ds, ds_image, output_dir, filename_prefix=None):
         "Protein Volume Outside Cell (voxel)"
         ]
 
-    df_image[col_order].to_csv(output_dir / ("summary" + fn + ".csv"), header=headers, index=False)
-
-        
+    df_image[col_order].to_csv(output_dir / ("summary" + fn + ".csv"), header=headers, index=False)        
 
 
 
 def export_tiff_stack(nucl_img, nucl_labels, protein_img, protein_labels, props, output_fn):
+    """
+    Generates and saves a labeled image stack
+
+    This function generates images showing the outline of the nuclei and the protein clusters. The outline of the nuclei are drawn in yellow and the protein clusters are in cyan. Additionally, each individual nuclei is labeled with an identifying number.
+
+    The generated images are TIFF stacks, which can be viewed using common software, e.g., Fiji/ImageJ.
+
+    Parameters
+    ----------
+    nucl_img : ndarray
+        3D image data of the nuclear channel. Shape should be [Z, Y, X].
+    nucl_labels : ndarray
+        Label for the objects in the image, with the same shape as nucl_img.
+    protein_img : _type_
+        3D image data of the labeled protein channel. Shape should be the same as nucl_img.
+    protein_labels : _type_
+        Label for the identified clusters in the image, with the same shape as nucl_img.
+    props : list
+        The output of skimage.measure.regionprops containing properties needed to generate the output image (label and centroid)
+    output_fn : str or Path
+        The full path (including filename) of the output image destination.
+    """
 
     # Normalize the images
     # nucl_img = normalize_image(nucl_img, max_factor=0.9, min_factor=0.0)
@@ -332,6 +458,35 @@ def export_tiff_stack(nucl_img, nucl_labels, protein_img, protein_labels, props,
     tifffile.imwrite(output_fn, final_stack_image, photometric='rgb')
 
 def analyze_images_in_dir(data_dir, output_dir):
+    """
+    Process image files in a directory
+
+    This function parses the directory for IMS-files then analyzes each file. The output of the files are then concatenated and saved in both netCDF and CSV formats.
+
+    Parameters
+    ----------
+    data_dir : str or Path
+        Path to a directory containing images to process
+    output_dir : _type_
+        Path to the output directory
+
+    Raises
+    ------
+    ValueError
+        If the input path is not a str or Path.
+    ValueError
+        If the input directory does not exist.
+    ValueError
+        If the input is not a directory (could be a file).
+    ValueError
+        If the output path is not a str or Path
+    ValueError
+        If the output path is not a directory
+
+    See also
+    --------
+    analyze_image : Processing code for an image file
+    """
 
     # Check that the data_dir is a valid directory
     if isinstance(data_dir, str):
@@ -382,6 +537,28 @@ def analyze_images_in_dir(data_dir, output_dir):
     save_datasets(all_ds, all_ds_image, output_dir)
 
 def main():
+    """
+    Process macrophage 3D images using the CLI.
+
+    This function initializes the argument parser, verifies the existence 
+    of the input path, and determines whether to process a single image 
+    file or an entire directory of images of zebrafish CHT (Caudal 
+    Hematopoietic Tissue).
+
+    Inputs
+
+    Raises
+    ------
+    ValueError
+        If the input path is neither a file nor a directory.
+    FileNotFoundError
+        If the provided input path does not exist on the file system.
+
+    See Also
+    --------
+    analyze_image : Process a single image file.
+    analyze_images_in_dir : Batch process a directory of images.
+    """
 
     parser = argparse.ArgumentParser(description="Process 3D images of macrophages within zebrafish CHT.")
 
@@ -406,5 +583,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    #analyze_images_in_dir(r"D:\Projects\OIC-264 Magarita\data\2-13-26 GA rapamycin\2026-02-13", r"../processed/2026-03-18 test")
-
